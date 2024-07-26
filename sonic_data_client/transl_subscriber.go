@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"encoding/json"
 	"github.com/Azure/sonic-mgmt-common/translib"
 	"github.com/Workiva/go-datastructures/queue"
 	log "github.com/golang/glog"
@@ -115,6 +116,64 @@ func (ts *translSubscriber) doOnChange(stringPaths []string) {
 	ts.synced.Wait()
 }
 
+func (ts *translSubscriber) processResponses(q *queue.PriorityQueue) {
+	defer ts.client.w.Done() // Ensure ts.client.w.Done() is called properly
+
+	var syncDone bool
+	defer func() {
+		if !syncDone {
+			ts.synced.Done() // Ensure ts.synced.Done() is called when not syncDone
+		}
+	}()
+	defer recoverSubscribe(ts.client) // Recover from panics and handle gracefully
+
+	ts.synced.Add(1) // Increment the WaitGroup counter at the start
+
+	for {
+		items, err := q.Get(1)
+		if err == queue.ErrDisposed {
+			log.V(3).Info("PriorityQueue was disposed!")
+			return
+		}
+		if err != nil {
+			enqueFatalMsgTranslib(ts.client, fmt.Sprintf("Subscribe operation failed with error: %v", err))
+			return
+		}
+
+		switch v := items[0].(type) {
+		case *translib.SubscribeResponse:
+			if v.IsTerminated {
+				enqueFatalMsgTranslib(ts.client, "DB Connection Error")
+				close(ts.client.channel)
+				ts.synced.Done() // Balance ts.synced.Add() calls
+				return
+			}
+
+			if v.SyncComplete {
+				if ts.stopOnSync {
+					ts.notify(nil)
+					log.V(6).Info("Stopping on sync signal from translib")
+					ts.synced.Done() // Balance ts.synced.Add() calls
+					return
+				}
+				log.V(6).Info("SENDING SYNC")
+				enqueueSyncMessage(ts.client)
+			} else {
+				if err := ts.notify(v); err != nil {
+					log.Warning(err)
+					enqueFatalMsgTranslib(ts.client, "Internal error")
+					ts.synced.Done() // Balance ts.synced.Add() calls
+					return
+				}
+			}
+
+		default:
+			log.V(1).Infof("Unknown data type %T in queue", v)
+		}
+	}
+}
+
+/*
 // processResponses waits for SubscribeResponse messages from translib over a
 // queue, formats them as spb.Value and pushes to the RPC queue.
 func (ts *translSubscriber) processResponses(q *queue.PriorityQueue) {
@@ -173,7 +232,7 @@ func (ts *translSubscriber) processResponses(q *queue.PriorityQueue) {
 		}
 	}
 }
-
+*/
 func (ts *translSubscriber) notify(v *translib.SubscribeResponse) error {
 	msg, err := ts.msgBuilder(v, ts)
 	if err != nil {
@@ -225,6 +284,21 @@ func defaultMsgBuilder(v *translib.SubscribeResponse, ts *translSubscriber) (*gn
 		n.Update, err = ts.ygotToScalarValues(extraPrefix, v.Update)
 		if err != nil {
 			return nil, err
+		}
+
+		respValue, err := json.Marshal(n.Update)
+		if err != nil {
+			return nil, err
+		}
+
+		n.Update = []*gnmipb.Update{
+			{
+				Val: &gnmipb.TypedValue{
+					Value: &gnmipb.TypedValue_JsonIetfVal{
+						JsonIetfVal: respValue,
+					},
+				},
+			},
 		}
 	}
 
@@ -339,12 +413,28 @@ func (c *ygotCache) msgBuilder(v *translib.SubscribeResponse, ts *translSubscrib
 		return nil, err
 	}
 
+	// Marshal the struct back into JSON
+	newJSON, err := json.Marshal(res.Update)
+	if err != nil {
+		log.Infof("json.Unmarshal failed with Error:", err)
+		return nil, err
+	}
+
 	return &gnmipb.Notification{
 		Timestamp: v.Timestamp,
 		Prefix:    ts.toPrefix(v.Path),
-		Update:    res.Update,
-		Delete:    res.Delete,
+		Update: []*gnmipb.Update{
+			{
+				Val: &gnmipb.TypedValue{
+					Value: &gnmipb.TypedValue_JsonIetfVal{
+						JsonIetfVal: newJSON,
+					},
+				},
+			},
+		},
+		Delete: res.Delete,
 	}, nil
+
 }
 
 // deleteMsgBuilder deletes the cache entries whose path does not appear in

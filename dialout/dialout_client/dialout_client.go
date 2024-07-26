@@ -5,14 +5,15 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	spb "github.com/sonic-net/sonic-gnmi/proto"
-	sdc "github.com/sonic-net/sonic-gnmi/sonic_data_client"
-	sdcfg "github.com/sonic-net/sonic-gnmi/sonic_db_config"
 	"github.com/Workiva/go-datastructures/queue"
 	"github.com/go-redis/redis"
 	log "github.com/golang/glog"
 	gpb "github.com/openconfig/gnmi/proto/gnmi"
 	"github.com/openconfig/ygot/ygot"
+	"github.com/sonic-net/sonic-gnmi/common_utils"
+	spb "github.com/sonic-net/sonic-gnmi/proto"
+	sdc "github.com/sonic-net/sonic-gnmi/sonic_data_client"
+	sdcfg "github.com/sonic-net/sonic-gnmi/sonic_db_config"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -107,12 +108,13 @@ type ClientConfig struct {
 // it also keeps mapping from destination to running publish Client instance
 type clientSubscription struct {
 	// Config Data
-	name          string
-	destGroupName string
-	prefix        *gpb.Path
-	paths         []*gpb.Path
-	reportType    reportType
-	interval      time.Duration // report interval
+	name              string
+	destGroupName     string
+	prefix            *gpb.Path
+	paths             []*gpb.Path
+	reportType        reportType
+	interval          time.Duration // report interval
+	heartbeatInterval time.Duration // heartbeat interval
 
 	// Running time data
 	cMu    sync.Mutex
@@ -194,9 +196,14 @@ func (cs *clientSubscription) NewInstance(ctx context.Context) error {
 	var err error
 	if target == "OTHERS" {
 		dc, err = sdc.NewNonDbClient(cs.paths, cs.prefix)
-	} else {
+	} else if common_utils.IsTargetDb(target) == true {
 		dc, err = sdc.NewDbClient(cs.paths, cs.prefix)
+	} else {
+		/* For any other target or no target create new Transl Client. */
+		log.Infof("@@@@@@@@@@@@@Sara:Starting NewTranslClient\n")
+		dc, err = sdc.NewTranslClient(cs.prefix, cs.paths, ctx, nil)
 	}
+
 	if err != nil {
 		log.V(1).Infof("Connection to DB for %v failed: %v", *cs, err)
 		return fmt.Errorf("Connection to DB for %v failed: %v", *cs, err)
@@ -312,6 +319,7 @@ restart: //Remote server might go down, in that case we restart with next destin
 	if err != nil {
 		log.V(1).Infof("Dialout connection for %v failed for %v, %v cs.conTryCnt %v", dest, cs.name, err, cs.conTryCnt)
 		goto restart
+
 	}
 
 	log.V(1).Infof("Dialout service connected to %v successfully for %v", dest, cs.name)
@@ -335,7 +343,7 @@ restart: //Remote server might go down, in that case we restart with next destin
 	cs.cMu.Unlock()
 
 	switch cs.reportType {
-	case Periodic:
+	case Once, Periodic:
 		for {
 			select {
 			default:
@@ -374,9 +382,12 @@ restart: //Remote server might go down, in that case we restart with next destin
 				}
 				log.V(6).Infof("cs %s to  %s done", cs.name, dest)
 				cs.sendMsg++
-				c.sendMsg++
-
-				time.Sleep(cs.interval)
+				if cs.reportType == Periodic {
+					time.Sleep(cs.interval)
+				} else if cs.reportType == Once {
+					log.Infof("Once %v exiting publishRun routine for destination %s", cs, dest)
+					return
+				}
 			case <-cs.stop:
 				log.V(1).Infof("%v exiting publishRun routine for destination %s", cs, dest)
 				return
@@ -386,7 +397,8 @@ restart: //Remote server might go down, in that case we restart with next destin
 		select {
 		default:
 			cs.w.Add(1)
-			go cs.dc.StreamRun(cs.q, cs.stop, &cs.w, nil)
+			s := prepareSubscriptionList(cs)
+			go cs.dc.StreamRun(cs.q, cs.stop, &cs.w, s)
 			time.Sleep(100 * time.Millisecond)
 			err = cs.send(pub)
 			if err != nil {
@@ -405,6 +417,33 @@ restart: //Remote server might go down, in that case we restart with next destin
 	default:
 		log.V(1).Infof("Unsupported report type %s in %v ", cs.reportType, cs)
 	}
+}
+
+func prepareSubscriptionList(cs *clientSubscription) *gpb.SubscriptionList {
+	target := cs.prefix.GetTarget()
+	if target != "OC-YANG" {
+		return nil
+	}
+
+	s := &gpb.SubscriptionList{
+		Mode:   gpb.SubscriptionList_STREAM,
+		Prefix: cs.prefix,
+	}
+
+	for _, path := range cs.paths {
+		mode := gpb.SubscriptionMode_SAMPLE
+		if cs.interval == 0 {
+			mode = gpb.SubscriptionMode_ON_CHANGE
+		}
+		s.Subscription = append(s.Subscription, &gpb.Subscription{
+			Path:              path,
+			Mode:              mode,
+			SampleInterval:    uint64(cs.interval),
+			HeartbeatInterval: uint64(cs.heartbeatInterval),
+			SuppressRedundant: false,
+		})
+	}
+	return s
 }
 
 /*
@@ -460,6 +499,7 @@ func setupDestGroupClients(ctx context.Context, destGroupName string) {
 // start/stop/update telemetry publist client as requested
 // TODO: more validation on db data
 func processTelemetryClientConfig(ctx context.Context, redisDb *redis.Client, key string, op string) error {
+	log.Infof("Sara in processTelemetryClientConfig")
 	ns, _ := sdcfg.GetDbDefaultNamespace()
 	separator, err := sdc.GetTableKeySeparator("CONFIG_DB", ns)
 	if err != nil {
@@ -577,7 +617,7 @@ func processTelemetryClientConfig(ctx context.Context, redisDb *redis.Client, ke
 			// TODO: start one subscription publish routine for this request
 			// Only start routine when DestGrp2ClientSubMap is not empty, or ...?
 			cs := clientSubscription{
-				interval: 5000, // default to 5000 milliseconds
+				interval: 20000, // default to 5000 milliseconds
 				name:     name,
 				cancel:   cancel,
 			}
@@ -611,6 +651,13 @@ func processTelemetryClientConfig(ctx context.Context, redisDb *redis.Client, ke
 						newPaths = append(newPaths, pp)
 					}
 					cs.paths = newPaths
+				case "heartbeat_interval":
+					intvl, err := strconv.ParseUint(value, 10, 64)
+					if err != nil {
+						log.Errorf("Invalid heartbeat_interval %v %v", value, err)
+						continue
+					}
+					cs.heartbeatInterval = time.Duration(intvl) * time.Millisecond
 				default:
 					log.V(2).Infof("Invalid field %v value %v", field, value)
 					return fmt.Errorf("Invalid field %v value %v", field, value)
