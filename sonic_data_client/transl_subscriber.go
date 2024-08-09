@@ -24,7 +24,6 @@ import (
 	"sync"
 	"time"
 
-	"encoding/json"
 	"github.com/Azure/sonic-mgmt-common/translib"
 	"github.com/Workiva/go-datastructures/queue"
 	log "github.com/golang/glog"
@@ -173,66 +172,6 @@ func (ts *translSubscriber) processResponses(q *queue.PriorityQueue) {
 	}
 }
 
-/*
-// processResponses waits for SubscribeResponse messages from translib over a
-// queue, formats them as spb.Value and pushes to the RPC queue.
-func (ts *translSubscriber) processResponses(q *queue.PriorityQueue) {
-	c := ts.client
-	var syncDone bool
-	defer c.w.Done()
-	defer func() {
-		if !syncDone {
-			ts.synced.Done()
-		}
-	}()
-	defer recoverSubscribe(c)
-
-	for {
-		items, err := q.Get(1)
-		if err == queue.ErrDisposed {
-			log.V(3).Info("PriorityQueue was disposed!")
-			return
-		}
-		if err != nil {
-			enqueFatalMsgTranslib(c, fmt.Sprintf("Subscribe operation failed with error =%v", err.Error()))
-			return
-		}
-		switch v := items[0].(type) {
-		case *translib.SubscribeResponse:
-
-			if v.IsTerminated {
-				//DB Connection or other backend error
-				enqueFatalMsgTranslib(c, "DB Connection Error")
-				close(c.channel)
-				return
-			}
-
-			if v.SyncComplete {
-				if ts.stopOnSync {
-					ts.notify(nil)
-					log.V(6).Infof("Stopping on sync signal from translib")
-					return
-				}
-
-				log.V(6).Infof("SENDING SYNC")
-				enqueueSyncMessage(c)
-				syncDone = true
-				ts.synced.Done()
-				ts.filterMsgs = false
-				break
-			}
-
-			if err := ts.notify(v); err != nil {
-				log.Warning(err)
-				enqueFatalMsgTranslib(c, "Internal error")
-				return
-			}
-		default:
-			log.V(1).Infof("Unknown data type %T in queue", v)
-		}
-	}
-}
-*/
 func (ts *translSubscriber) notify(v *translib.SubscribeResponse) error {
 	msg, err := ts.msgBuilder(v, ts)
 	if err != nil {
@@ -284,21 +223,6 @@ func defaultMsgBuilder(v *translib.SubscribeResponse, ts *translSubscriber) (*gn
 		n.Update, err = ts.ygotToScalarValues(extraPrefix, v.Update)
 		if err != nil {
 			return nil, err
-		}
-
-		respValue, err := json.Marshal(n.Update)
-		if err != nil {
-			return nil, err
-		}
-
-		n.Update = []*gnmipb.Update{
-			{
-				Val: &gnmipb.TypedValue{
-					Value: &gnmipb.TypedValue_JsonIetfVal{
-						JsonIetfVal: respValue,
-					},
-				},
-			},
 		}
 	}
 
@@ -413,28 +337,12 @@ func (c *ygotCache) msgBuilder(v *translib.SubscribeResponse, ts *translSubscrib
 		return nil, err
 	}
 
-	// Marshal the struct back into JSON
-	newJSON, err := json.Marshal(res.Update)
-	if err != nil {
-		log.Infof("json.Unmarshal failed with Error:", err)
-		return nil, err
-	}
-
 	return &gnmipb.Notification{
 		Timestamp: v.Timestamp,
 		Prefix:    ts.toPrefix(v.Path),
-		Update: []*gnmipb.Update{
-			{
-				Val: &gnmipb.TypedValue{
-					Value: &gnmipb.TypedValue_JsonIetfVal{
-						JsonIetfVal: newJSON,
-					},
-				},
-			},
-		},
-		Delete: res.Delete,
+		Update:    res.Update,
+		Delete:    res.Delete,
 	}, nil
-
 }
 
 // deleteMsgBuilder deletes the cache entries whose path does not appear in

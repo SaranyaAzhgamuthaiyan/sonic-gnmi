@@ -84,6 +84,7 @@ else
 	$(GO) install -mod=vendor $(BLD_FLAGS) github.com/sonic-net/sonic-gnmi/telemetry
 ifneq ($(ENABLE_DIALOUT_VALUE),0)
 	$(GO) install -mod=vendor $(BLD_FLAGS) github.com/sonic-net/sonic-gnmi/dialout/dialout_client_cli
+	$(GO) install -mod=vendor $(BLD_FLAGS) github.com/sonic-net/sonic-gnmi/dialout/dialout_server_cli
 endif
 	$(GO) install -mod=vendor github.com/jipanyang/gnxi/gnmi_get
 	$(GO) install -mod=vendor github.com/jipanyang/gnxi/gnmi_set
@@ -156,6 +157,7 @@ install:
 	$(INSTALL) -D $(BUILD_DIR)/telemetry $(DESTDIR)/usr/sbin/telemetry
 ifneq ($(ENABLE_DIALOUT_VALUE),0)
 	$(INSTALL) -D $(BUILD_DIR)/dialout_client_cli $(DESTDIR)/usr/sbin/dialout_client_cli
+	$(INSTALL) -D $(BUILD_DIR)/dialout_server_cli $(DESTDIR)/usr/sbin/dialout_server_cli
 endif
 	$(INSTALL) -D $(BUILD_DIR)/gnmi_get $(DESTDIR)/usr/sbin/gnmi_get
 	$(INSTALL) -D $(BUILD_DIR)/gnmi_set $(DESTDIR)/usr/sbin/gnmi_set
@@ -168,6 +170,7 @@ deinstall:
 	rm $(DESTDIR)/usr/sbin/telemetry
 ifneq ($(ENABLE_DIALOUT_VALUE),0)
 	rm $(DESTDIR)/usr/sbin/dialout_client_cli
+	rm $(DESTDIR)/usr/sbin/dialout_server_cli
 endif
 	rm $(DESTDIR)/usr/sbin/gnmi_get
 	rm $(DESTDIR)/usr/sbin/gnmi_set
