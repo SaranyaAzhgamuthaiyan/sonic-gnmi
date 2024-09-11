@@ -172,6 +172,7 @@ func (cs *clientSubscription) Close() {
 }
 
 func (cs *clientSubscription) NewInstance(ctx context.Context) error {
+	log.Infof("In NewInstance")
 	cs.cMu.Lock()
 	defer cs.cMu.Unlock()
 
@@ -200,7 +201,6 @@ func (cs *clientSubscription) NewInstance(ctx context.Context) error {
 		dc, err = sdc.NewDbClient(cs.paths, cs.prefix)
 	} else {
 		/* For any other target or no target create new Transl Client. */
-		log.Infof("@@@@@@@@@@@@@Sara:Starting NewTranslClient\n")
 		dc, err = sdc.NewTranslClient(cs.prefix, cs.paths, ctx, nil)
 	}
 
@@ -319,7 +319,6 @@ restart: //Remote server might go down, in that case we restart with next destin
 	if err != nil {
 		log.V(1).Infof("Dialout connection for %v failed for %v, %v cs.conTryCnt %v", dest, cs.name, err, cs.conTryCnt)
 		goto restart
-
 	}
 
 	log.V(1).Infof("Dialout service connected to %v successfully for %v", dest, cs.name)
@@ -382,10 +381,13 @@ restart: //Remote server might go down, in that case we restart with next destin
 				}
 				log.V(6).Infof("cs %s to  %s done", cs.name, dest)
 				cs.sendMsg++
+				c.sendMsg++
 				if cs.reportType == Periodic {
 					time.Sleep(cs.interval)
-				} else if cs.reportType == Once {
+				}
+				if cs.reportType == Once {
 					log.Infof("Once %v exiting publishRun routine for destination %s", cs, dest)
+                                        //cs.Close()
 					return
 				}
 			case <-cs.stop:
@@ -485,21 +487,22 @@ func closeDestGroupClient(destGroupName string) {
 // setupDestGroupClients create client instances for all clientSubscription using
 // this Destination Group
 func setupDestGroupClients(ctx context.Context, destGroupName string) {
+	log.Infof("In setupDestGroupClients")
 	if names, ok := DestGrp2ClientSubMap[destGroupName]; ok {
 		for _, name := range names {
 			// Create a copy of Client subscription, existing one might be closing, don't interfere with it.
 			cs := *ClientSubscriptionNameMap[name]
-			log.V(2).Infof("NewInstance with destGroup change for %s to %s", name, destGroupName)
-			cs.NewInstance(ctx)
+			log.Infof("NewInstance with destGroup change for %s to %s", name, destGroupName)
+			//cs.NewInstance(ctx)
 			ClientSubscriptionNameMap[name] = &cs
 		}
 	}
+	log.Infof("Exit of setupDestGroupClients")
 }
 
 // start/stop/update telemetry publist client as requested
 // TODO: more validation on db data
 func processTelemetryClientConfig(ctx context.Context, redisDb *redis.Client, key string, op string) error {
-	log.Infof("Sara in processTelemetryClientConfig")
 	ns, _ := sdcfg.GetDbDefaultNamespace()
 	separator, err := sdc.GetTableKeySeparator("CONFIG_DB", ns)
 	if err != nil {
@@ -545,6 +548,7 @@ func processTelemetryClientConfig(ctx context.Context, redisDb *redis.Client, ke
 			}
 			// Apply changes to all running instances
 			for grpName := range destGrpNameMap {
+				log.Info("New log: ProcessTelemetry ",grpName, "ctx: ",ctx)
 				closeDestGroupClient(grpName)
 				setupDestGroupClients(ctx, grpName)
 			}
@@ -584,6 +588,7 @@ func processTelemetryClientConfig(ctx context.Context, redisDb *redis.Client, ke
 					return fmt.Errorf("Invalid DestinationGroup value %v", value)
 				}
 			}
+			log.Info("New log: ProcessTelemetry ",destGroupName)
 			destGrpNameMap[destGroupName] = dests
 			setupDestGroupClients(ctx, destGroupName)
 		}
@@ -688,104 +693,267 @@ func processTelemetryClientConfig(ctx context.Context, redisDb *redis.Client, ke
 	return nil
 }
 
-// read configDB data for telemetry client and start publishing service for client subscription
-func DialOutRun(ctx context.Context, ccfg *ClientConfig) error {
-	clientCfg = ccfg
-	ns, _ := sdcfg.GetDbDefaultNamespace()
-	dbn, err := sdcfg.GetDbId("CONFIG_DB", ns)
-	if err != nil {
-		return err
-	}
+func validateFields(redisDb *redis.Client, key string) (error) {
+    ns, _ := sdcfg.GetDbDefaultNamespace()
+    separator, err := sdc.GetTableKeySeparator("CONFIG_DB", ns)
+    if err != nil {
+        return err
+    }
+    tableKey := "TELEMETRY_CLIENT" + separator + key
 
-	var redisDb *redis.Client
-	if sdc.UseRedisLocalTcpPort == false {
-		addr, err := sdcfg.GetDbSock("CONFIG_DB", ns)
-		if err != nil {
-			return err
-		}
-		redisDb = redis.NewClient(&redis.Options{
-			Network:     "unix",
-			Addr:        addr,
-			Password:    "", // no password set
-			DB:          dbn,
-			DialTimeout: 0,
-		})
-	} else {
-		addr, err := sdcfg.GetDbTcpAddr("CONFIG_DB", ns)
-		if err != nil {
-			return err
-		}
-		redisDb = redis.NewClient(&redis.Options{
-			Network:     "tcp",
-			Addr:        addr,
-			Password:    "", // no password set
-			DB:          dbn,
-			DialTimeout: 0,
-		})
-	}
+    // Determine configuration type
+    var configType string
+    if strings.HasPrefix(key, "Global") {
+        configType = "Global"
+    } else if strings.HasPrefix(key, "DestinationGroup_") {
+        configType = "Destination"
+    } else if strings.HasPrefix(key, "Subscription_") {
+        configType = "Subscription"
+    } else {
+        return fmt.Errorf("Unknown configuration key %v", key)
+    }
 
-	separator, err := sdc.GetTableKeySeparator("CONFIG_DB", ns)
-	if err != nil {
-		return err
-	}
-	pattern := "__keyspace@" + strconv.Itoa(int(dbn)) + "__:TELEMETRY_CLIENT" + separator
-	prefixLen := len(pattern)
-	pattern += "*"
+    // Fetch configuration fields
+    fv, err := redisDb.HGetAll(tableKey).Result()
+    if err != nil {
+        return fmt.Errorf("redis HGetAll failed for %s with error %v", tableKey, err)
+    }
 
-	pubsub := redisDb.PSubscribe(pattern)
-	defer pubsub.Close()
+    // Validate configuration fields based on type
+    switch configType {
+    case "Global":
+        requiredFields := []string{"src_ip", "retry_interval", "encoding", "unidirectional"}
+        for _, field := range requiredFields {
+            if _, ok := fv[field]; !ok {
+                return fmt.Errorf("Missing required field %v in global configuration", field)
+            }
+        }
+    case "Destination":
+        requiredFields := []string{"dst_addr"}
+        for _, field := range requiredFields {
+            if _, ok := fv[field]; !ok {
+                return fmt.Errorf("Missing required field %v in destination configuration", field)
+            }
+        }
+    case "Subscription":
+        requiredFields := []string{"dst_group", "report_type", "report_interval", "path_target", "paths", "heartbeat_interval"}
+        for _, field := range requiredFields {
+            if _, ok := fv[field]; !ok {
+                return fmt.Errorf("Missing required field %v in subscription configuration", field)
+            }
+        }
+    default:
+        return fmt.Errorf("Unknown configuration type %v", configType)
+    }
 
-	msgi, err := pubsub.ReceiveTimeout(time.Second)
-	if err != nil {
-		log.V(1).Infof("psubscribe to %s failed %v", pattern, err)
-		return fmt.Errorf("psubscribe to %s failed %v", pattern, err)
-	}
-	subscr := msgi.(*redis.Subscription)
-	if subscr.Channel != pattern {
-		log.V(1).Infof("psubscribe to %s failed", pattern)
-		return fmt.Errorf("psubscribe to %s", pattern)
-	}
-	log.V(2).Infof("Psubscribe succeeded: %v", subscr)
-
-	var dbkeys []string
-	dbkey_prefix := "TELEMETRY_CLIENT" + separator
-	dbkeys, err = redisDb.Keys(dbkey_prefix + "*").Result()
-	if err != nil {
-		log.V(2).Infof("redis Keys failed for %v with err %v", pattern, err)
-		return err
-	}
-	for _, dbkey := range dbkeys {
-		dbkey = dbkey[len(dbkey_prefix):]
-		processTelemetryClientConfig(ctx, redisDb, dbkey, "hset")
-	}
-
-	for {
-		msgi, err := pubsub.ReceiveTimeout(time.Millisecond * 1000)
-		if err != nil {
-			neterr, ok := err.(net.Error)
-			if ok {
-				if neterr.Timeout() == true {
-					continue
-				}
-			}
-			log.V(2).Infof("pubsub.ReceiveTimeout err %v", err)
-			continue
-		}
-		subscr := msgi.(*redis.Message)
-		dbkey := subscr.Channel[prefixLen:]
-		if subscr.Payload == "del" || subscr.Payload == "hdel" {
-			processTelemetryClientConfig(ctx, redisDb, dbkey, "hdel")
-		} else if subscr.Payload == "hset" {
-			processTelemetryClientConfig(ctx, redisDb, dbkey, "hset")
-		} else {
-			log.V(2).Infof("Invalid psubscribe payload notification:  %v", subscr)
-			continue
-		}
-		// Check if ctx was canceled.
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-	}
+    return nil
 }
+
+// New function to build table key
+func buildTableKey(dbkey string) (string, error) {
+    ns, _ := sdcfg.GetDbDefaultNamespace()
+    separator, err := sdc.GetTableKeySeparator("CONFIG_DB", ns)
+    if err != nil {
+        return "", err
+    }
+    tableKey := "TELEMETRY_CLIENT" + separator + dbkey
+    return tableKey, nil
+}
+
+func DialOutRun(ctx context.Context, ccfg *ClientConfig) error {
+    clientCfg = ccfg
+    ns, _ := sdcfg.GetDbDefaultNamespace()
+    dbn, err := sdcfg.GetDbId("CONFIG_DB", ns)
+    if err != nil {
+        return err
+    }
+
+    var redisDb *redis.Client
+    if !sdc.UseRedisLocalTcpPort {
+        addr, err := sdcfg.GetDbSock("CONFIG_DB", ns)
+        if err != nil {
+            return err
+        }
+        redisDb = redis.NewClient(&redis.Options{
+            Network:     "unix",
+            Addr:        addr,
+            Password:    "", // no password set
+            DB:          dbn,
+            DialTimeout: 0,
+        })
+    } else {
+        addr, err := sdcfg.GetDbTcpAddr("CONFIG_DB", ns)
+        if err != nil {
+            return err
+        }
+        redisDb = redis.NewClient(&redis.Options{
+            Network:     "tcp",
+            Addr:        addr,
+            Password:    "", // no password set
+            DB:          dbn,
+            DialTimeout: 0,
+        })
+    }
+
+    separator, err := sdc.GetTableKeySeparator("CONFIG_DB", ns)
+    if err != nil {
+        return err
+    }
+    pattern := "__keyspace@" + strconv.Itoa(int(dbn)) + "__:TELEMETRY_CLIENT" + separator
+    prefixLen := len(pattern)
+    pattern += "*"
+
+    pubsub := redisDb.PSubscribe(pattern)
+    defer pubsub.Close()
+
+    msgi, err := pubsub.ReceiveTimeout(time.Second)
+    if err != nil {
+        log.V(1).Infof("psubscribe to %s failed %v", pattern, err)
+        return fmt.Errorf("psubscribe to %s failed %v", pattern, err)
+    }
+    subscr := msgi.(*redis.Subscription)
+    if subscr.Channel != pattern {
+        log.V(1).Infof("psubscribe to %s failed", pattern)
+        return fmt.Errorf("psubscribe to %s", pattern)
+    }
+    log.V(2).Infof("Psubscribe succeeded: %v", subscr)
+
+    var dbkeys []string
+    dbkeyPrefix := "TELEMETRY_CLIENT" + separator
+    dbkeys, err = redisDb.Keys(dbkeyPrefix + "*").Result()
+    if err != nil {
+        log.V(2).Infof("redis Keys failed for %v with err %v", pattern, err)
+        return err
+    }
+
+    // Map to track the state of keys
+    processedKeys := make(map[string]string) // Key -> Last Operation State
+    lastConfigurations := make(map[string]map[string]string) // Key -> Last Configuration
+
+    for _, dbkey := range dbkeys {
+	    dbkey = dbkey[len(dbkeyPrefix):]
+	    if err := validateFields(redisDb, dbkey); err != nil {
+		    log.Errorf("Validation failed for key %v: %v", dbkey, err)
+		    continue
+	    }
+	    log.Infof("Initial processing of key %v with operation %v", dbkey, "hset")
+
+	    if err := processTelemetryClientConfig(ctx, redisDb, dbkey, "hset"); err != nil {
+		    log.Errorf("Error processing initial key %v: %v", dbkey, err)
+	    }
+	    processedKeys[dbkey] = "hset" // Mark as processed with state 'hset'
+	    // Store the initial configuration
+
+	    tableKey, err := buildTableKey(dbkey)
+	    if err != nil {
+		    return err
+	    }
+
+	    lastConfig, err := redisDb.HGetAll(tableKey).Result()
+	    if err != nil {
+		    log.Errorf("Failed to get last configuration for key %v: %v", dbkey, err)
+		    continue
+	    }
+	    if len(lastConfig) == 0 {
+		    log.Infof("No configuration found for key %v", dbkey)
+	    } else {
+		    lastConfigurations[dbkey] = lastConfig
+		    log.Infof("Stored last configuration for key %v: %v", dbkey, lastConfig)
+	    }
+
+    }
+
+    for {
+        msgi, err := pubsub.ReceiveTimeout(time.Millisecond * 1000)
+        if err != nil {
+            neterr, ok := err.(net.Error)
+            if ok && neterr.Timeout() {
+                log.V(2).Infof("pubsub.ReceiveTimeout - timeout occurred")
+                continue
+            }
+            log.V(2).Infof("pubsub.ReceiveTimeout err %v", err)
+            continue
+        }
+
+        subscr := msgi.(*redis.Message)
+        dbkey := subscr.Channel[prefixLen:]
+        currentOp := subscr.Payload
+        lastOp, exists := processedKeys[dbkey]
+
+        log.Infof("Received message for key %v: %v, OPER:%v", dbkey, subscr.Payload, currentOp)
+
+	switch currentOp {
+	case "del":
+		if exists && lastOp != "del" {
+			log.Infof("Processing delete for key %v", dbkey)
+			if err := processTelemetryClientConfig(ctx, redisDb, dbkey, "hdel"); err != nil {
+				log.Errorf("Error processing delete for key %v: %v", dbkey, err)
+			}
+			delete(processedKeys, dbkey)
+			delete(lastConfigurations, dbkey)
+		} else {
+			log.Infof("Skipping delete for key %v as it was either not processed or already deleted", dbkey)
+		}
+	case "hset":
+
+		if err := validateFields(redisDb, dbkey); err != nil {
+			log.Errorf("Validation failed for key %v: %v", dbkey, err)
+			continue
+		}
+		tableKey, err := buildTableKey(dbkey)
+		if err != nil {
+			return err
+		}
+	
+		// Fetch the new configuration
+		newConfig, err := redisDb.HGetAll(tableKey).Result()
+		if err != nil {
+			log.Errorf("Failed to get new configuration for key %v: %v", dbkey, err)
+			continue
+		}
+
+		// Debugging: Log new configuration
+		log.Infof("Fetched new configuration for key %v: %v", dbkey, newConfig)
+
+		// Check and process the new configuration
+		lastConfig := lastConfigurations[dbkey]
+		log.Infof("Fetched last configuration for key %v: %v", dbkey, lastConfig)
+		if !isEqual(lastConfig, newConfig) {
+
+			log.Infof("Processing hset for key %v", dbkey)
+
+			if err := processTelemetryClientConfig(ctx, redisDb, dbkey, "hset"); err != nil {
+				log.Errorf("Error processing hset for key %v: %v", dbkey, err)
+			}
+			lastConfigurations[dbkey] = newConfig // Update last known configuration
+			processedKeys[dbkey] = "hset" // Update operation state
+		} else {
+			log.Infof("Skipping redundant hset for key %v", dbkey)
+		}
+	default:
+            log.Infof("Invalid psubscribe payload notification: %v", subscr)
+        }
+
+        // Check if ctx was canceled.
+        select {
+        case <-ctx.Done():
+            log.Infof("Context done, exiting.")
+            return ctx.Err()
+        default:
+        }
+    }
+}
+
+// Helper function to compare two configurations
+func isEqual(cfg1, cfg2 map[string]string) bool {
+    if len(cfg1) != len(cfg2) {
+        return false
+    }
+    for key, val1 := range cfg1 {
+        if val2, ok := cfg2[key]; !ok || val1 != val2 {
+            return false
+        }
+    }
+    return true
+}
+
