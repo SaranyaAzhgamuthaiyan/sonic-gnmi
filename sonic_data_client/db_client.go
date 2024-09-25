@@ -366,7 +366,6 @@ func (c *DbClient) Get(w *sync.WaitGroup) ([]*spb.Value, error) {
 func (c *DbClient) Close() error {
 	return nil
 }
-
 // Convert from SONiC Value to its corresponding gNMI proto stream
 // response type.
 func ValToResp(val Value) (*gnmipb.SubscribeResponse, error) {
@@ -382,11 +381,45 @@ func ValToResp(val Value) (*gnmipb.SubscribeResponse, error) {
 		if fatal := val.GetFatal(); fatal != "" {
 			return nil, fmt.Errorf("%s", fatal)
 		}
-
 		// In case the client returned a full gnmipb.Notification object
 		if n := val.GetNotification(); n != nil {
+
+			// Prepare to convert updates to JsonIetfVal format
+			for _, update := range n.GetUpdate() {
+				val := update.GetVal()
+
+				// Initialize jsonIetfVal as nil
+				var jsonIetfVal *gnmipb.TypedValue
+
+				switch v := val.Value.(type) {
+				case *gnmipb.TypedValue_StringVal:
+					jsonIetfVal = &gnmipb.TypedValue{
+						Value: &gnmipb.TypedValue_LeaflistVal{
+							LeaflistVal: &gnmipb.ScalarArray{
+								Element: []*gnmipb.TypedValue{
+									{
+										Value: &gnmipb.TypedValue_StringVal{
+											StringVal: v.StringVal,
+										},
+									},
+								},
+							},
+						},
+					}
+				default:
+					log.Infof("Skipping value for other data types: %T", v)
+					continue
+				}
+				// Update the value in the notification
+				update.Val = jsonIetfVal
+			}
+
+			// Return the modified notification
 			return &gnmipb.SubscribeResponse{
-				Response: &gnmipb.SubscribeResponse_Update{Update: n}}, nil
+				Response: &gnmipb.SubscribeResponse_Update{
+					Update: n,
+				},
+			}, nil
 		}
 
 		// In case of path deletion
@@ -400,14 +433,13 @@ func ValToResp(val Value) (*gnmipb.SubscribeResponse, error) {
 						Update: []*gnmipb.Update{
 							{
 								Path: val.GetPath(),
-								Val:  val.GetVal(),
+								Val: val.GetVal(),
 							},
 						},
 					},
 				},
 			}, nil
 		}
-
 		return &gnmipb.SubscribeResponse{
 			Response: &gnmipb.SubscribeResponse_Update{
 				Update: &gnmipb.Notification{
@@ -416,7 +448,7 @@ func ValToResp(val Value) (*gnmipb.SubscribeResponse, error) {
 					Update: []*gnmipb.Update{
 						{
 							Path: val.GetPath(),
-							Val:  val.GetVal(),
+							Val: val.GetVal(),
 						},
 					},
 				},
@@ -1382,5 +1414,94 @@ func validateSampleInterval(sub *gnmipb.Subscription) (time.Duration, error) {
 		return 0, fmt.Errorf("invalid interval: %v. It cannot be less than %v", requestedInterval, MinSampleInterval)
 	} else {
 		return requestedInterval, nil
+	}
+}
+
+// convertPathToMap converts the path elements to a nested map based on the prefix and incorporates key-value pairs from the update.
+func convertPathToMap(prefix *gnmipb.Path, updates []*gnmipb.Update) map[string]interface{} {
+    result := make(map[string]interface{})
+    current := result
+
+    // Traverse the path elements to build the nested map structure.
+    for i, elem := range prefix.GetElem() {
+        if elem.Name != "" {
+            if _, exists := current[elem.Name]; !exists {
+                current[elem.Name] = make(map[string]interface{})
+            }
+            // Move current to the nested map
+            current = current[elem.Name].(map[string]interface{})
+        }
+
+        // Add key-value pairs to the last element's map
+        if key := elem.GetKey(); key != nil {
+            // Assuming key is a map[string]string
+            if keyValue, exists := key["desiredKey"]; exists {
+                if len(prefix.GetElem()) == i+1 {
+                    // Last element in the path, add value here
+                    for _, update := range updates {
+                        if update.GetPath() == prefix {
+                            addValueToMap(current, keyValue, update.GetVal())
+                        }
+                    }
+                } else {
+                    // Intermediate level
+                    if _, exists := current[keyValue]; !exists {
+                        current[keyValue] = make(map[string]interface{})
+                    }
+                    // Move current to the nested map
+                    nextMap, ok := current[keyValue].(map[string]interface{})
+                    if !ok {
+                        // Handle error or log it
+                        continue
+                    }
+                    current = nextMap
+                }
+            }
+        }
+    }
+
+    return result
+}
+
+// addValueToMap adds the value to the map at the specified key.
+func addValueToMap(m map[string]interface{}, key string, val *gnmipb.TypedValue) {
+	switch v := val.GetValue().(type) {
+	case *gnmipb.TypedValue_StringVal:
+		m[key] = v.StringVal
+	case *gnmipb.TypedValue_IntVal:
+		m[key] = v.IntVal
+	case *gnmipb.TypedValue_UintVal:
+		m[key] = v.UintVal
+	case *gnmipb.TypedValue_BoolVal:
+		m[key] = v.BoolVal
+	case *gnmipb.TypedValue_FloatVal:
+		m[key] = v.FloatVal
+	case *gnmipb.TypedValue_JsonIetfVal:
+		var tempMap map[string]interface{}
+		if err := json.Unmarshal(v.JsonIetfVal, &tempMap); err != nil {
+			log.Errorf("error unmarshaling JsonIetfVal: %v", err)
+			return
+		}
+		mergeMaps(m, tempMap)
+	default:
+		log.Errorf("unsupported TypedValue type: %T", v)
+	}
+}
+
+// mergeMaps merges two maps.
+func mergeMaps(dst map[string]interface{}, src map[string]interface{}) {
+	for k, v := range src {
+		if _, exists := dst[k]; exists {
+			switch dstVal := dst[k].(type) {
+			case map[string]interface{}:
+				if srcVal, ok := v.(map[string]interface{}); ok {
+					mergeMaps(dstVal, srcVal)
+				}
+			default:
+				dst[k] = v
+			}
+		} else {
+			dst[k] = v
+		}
 	}
 }
