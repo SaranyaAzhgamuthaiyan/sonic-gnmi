@@ -114,27 +114,7 @@ func TranslProcessGet(uriPath string, op *string, ctx context.Context) ([]*gnmip
 	if rc.Auth.AuthEnabled {
 		req.AuthEnabled = true
 	}
-	/*
-		resp, err1 := translib.Get(req)
 
-		if isTranslibSuccess(err1) {
-			data = resp.Payload
-		} else {
-			log.V(2).Infof("GET operation failed with error =%v, %v", resp.ErrSrc, err1.Error())
-			return nil, err1
-		}
-
-		dst := new(bytes.Buffer)
-		json.Compact(dst, data)
-		jv = dst.Bytes()
-
-
-		return &gnmipb.TypedValue{
-			Value: &gnmipb.TypedValue_JsonIetfVal{
-			JsonIetfVal: jv,
-			}}, nil
-
-	*/
 	resp, err1 := translib.Get(req)
 	if isTranslibSuccess(err1) {
 		for _, iter := range resp {
@@ -151,7 +131,7 @@ func TranslProcessGet(uriPath string, op *string, ctx context.Context) ([]*gnmip
 			tv = append(tv, tmp)
 		}
 	} else {
-		log.Infof("GET operation failed with error =%v, %v", resp[0].ErrSrc, err1.Error())
+		log.V(2).Infof("GET operation failed with error =%v, %v", resp, err1.Error())
 		return nil, err1
 	}
 

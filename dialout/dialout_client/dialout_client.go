@@ -172,7 +172,6 @@ func (cs *clientSubscription) Close() {
 }
 
 func (cs *clientSubscription) NewInstance(ctx context.Context) error {
-	log.Infof("In NewInstance")
 	cs.cMu.Lock()
 	defer cs.cMu.Unlock()
 
@@ -386,7 +385,6 @@ restart: //Remote server might go down, in that case we restart with next destin
 					time.Sleep(cs.interval)
 				}
 				if cs.reportType == Once {
-					log.Infof("Once %v exiting publishRun routine for destination %s", cs, dest)
                                         //cs.Close()
 					return
 				}
@@ -487,17 +485,14 @@ func closeDestGroupClient(destGroupName string) {
 // setupDestGroupClients create client instances for all clientSubscription using
 // this Destination Group
 func setupDestGroupClients(ctx context.Context, destGroupName string) {
-	log.Infof("In setupDestGroupClients")
 	if names, ok := DestGrp2ClientSubMap[destGroupName]; ok {
 		for _, name := range names {
 			// Create a copy of Client subscription, existing one might be closing, don't interfere with it.
 			cs := *ClientSubscriptionNameMap[name]
-			log.Infof("NewInstance with destGroup change for %s to %s", name, destGroupName)
 			//cs.NewInstance(ctx)
 			ClientSubscriptionNameMap[name] = &cs
 		}
 	}
-	log.Infof("Exit of setupDestGroupClients")
 }
 
 // start/stop/update telemetry publist client as requested
@@ -548,7 +543,6 @@ func processTelemetryClientConfig(ctx context.Context, redisDb *redis.Client, ke
 			}
 			// Apply changes to all running instances
 			for grpName := range destGrpNameMap {
-				log.Info("New log: ProcessTelemetry ",grpName, "ctx: ",ctx)
 				closeDestGroupClient(grpName)
 				setupDestGroupClients(ctx, grpName)
 			}
@@ -588,7 +582,6 @@ func processTelemetryClientConfig(ctx context.Context, redisDb *redis.Client, ke
 					return fmt.Errorf("Invalid DestinationGroup value %v", value)
 				}
 			}
-			log.Info("New log: ProcessTelemetry ",destGroupName)
 			destGrpNameMap[destGroupName] = dests
 			setupDestGroupClients(ctx, destGroupName)
 		}
@@ -694,7 +687,10 @@ func processTelemetryClientConfig(ctx context.Context, redisDb *redis.Client, ke
 }
 
 func validateFields(redisDb *redis.Client, key string) (error) {
-    ns, _ := sdcfg.GetDbDefaultNamespace()
+    ns, err := sdcfg.GetDbDefaultNamespace()
+    if err != nil {
+        return err
+    }
     separator, err := sdc.GetTableKeySeparator("CONFIG_DB", ns)
     if err != nil {
         return err
@@ -762,7 +758,10 @@ func buildTableKey(dbkey string) (string, error) {
 
 func DialOutRun(ctx context.Context, ccfg *ClientConfig) error {
     clientCfg = ccfg
-    ns, _ := sdcfg.GetDbDefaultNamespace()
+    ns, err := sdcfg.GetDbDefaultNamespace()
+    if err != nil {
+        return err
+    }
     dbn, err := sdcfg.GetDbId("CONFIG_DB", ns)
     if err != nil {
         return err
@@ -868,7 +867,6 @@ func DialOutRun(ctx context.Context, ccfg *ClientConfig) error {
         if err != nil {
             neterr, ok := err.(net.Error)
             if ok && neterr.Timeout() {
-                log.V(2).Infof("pubsub.ReceiveTimeout - timeout occurred")
                 continue
             }
             log.V(2).Infof("pubsub.ReceiveTimeout err %v", err)
@@ -880,19 +878,16 @@ func DialOutRun(ctx context.Context, ccfg *ClientConfig) error {
         currentOp := subscr.Payload
         lastOp, exists := processedKeys[dbkey]
 
-        log.Infof("Received message for key %v: %v, OPER:%v", dbkey, subscr.Payload, currentOp)
-
 	switch currentOp {
 	case "del":
 		if exists && lastOp != "del" {
-			log.Infof("Processing delete for key %v", dbkey)
 			if err := processTelemetryClientConfig(ctx, redisDb, dbkey, "hdel"); err != nil {
 				log.Errorf("Error processing delete for key %v: %v", dbkey, err)
 			}
 			delete(processedKeys, dbkey)
 			delete(lastConfigurations, dbkey)
 		} else {
-			log.Infof("Skipping delete for key %v as it was either not processed or already deleted", dbkey)
+			log.V(2).Infof("Skipping delete for key %v as it was either not processed or already deleted", dbkey)
 		}
 	case "hset":
 
@@ -912,15 +907,10 @@ func DialOutRun(ctx context.Context, ccfg *ClientConfig) error {
 			continue
 		}
 
-		// Debugging: Log new configuration
-		log.Infof("Fetched new configuration for key %v: %v", dbkey, newConfig)
-
 		// Check and process the new configuration
 		lastConfig := lastConfigurations[dbkey]
-		log.Infof("Fetched last configuration for key %v: %v", dbkey, lastConfig)
-		if !isEqual(lastConfig, newConfig) {
 
-			log.Infof("Processing hset for key %v", dbkey)
+		if !isEqual(lastConfig, newConfig) {
 
 			if err := processTelemetryClientConfig(ctx, redisDb, dbkey, "hset"); err != nil {
 				log.Errorf("Error processing hset for key %v: %v", dbkey, err)

@@ -12,6 +12,11 @@ import (
 
 	ds "github.com/sonic-net/sonic-gnmi/dialout/dialout_server"
 	testcert "github.com/sonic-net/sonic-gnmi/testdata/tls"
+	//"context"
+	"os"
+	"os/signal"
+	"syscall"
+	//"time"
 )
 
 var (
@@ -88,6 +93,26 @@ func main() {
 	}
 
 	log.V(1).Infof("Starting RPC server on address: %s", s.Address())
-	s.Serve() // blocks until close
+	// Create a channel to receive OS signals
+	stopChan := make(chan os.Signal, 1)
+	signal.Notify(stopChan, syscall.SIGINT, syscall.SIGTERM)
+
+	// Run the server in a goroutine
+	go func() {
+		if err := s.Serve(); err != nil {
+			log.Infof("Server stopped with error: %v", err)
+		}
+	}()
+
+	// Wait for a signal
+	<-stopChan
+	log.Info("Signal received, initiating server shutdown...")
+
+	s.Stop()
+
+	// Ensure all logs are flushed
+	log.Info("Flushing logs...")
 	log.Flush()
+
+	log.Info("Server stopped successfully.")
 }

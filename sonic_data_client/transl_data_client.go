@@ -106,8 +106,8 @@ func (c *TranslClient) Get(w *sync.WaitGroup) ([]*spb.Value, error) {
 	/* The values structure at the end is returned and then updates in notitications as
 	specified in the proto file in the server.go */
 
-	log.Infof("TranslClient : Getting #%v", values)
-	log.Infof("TranslClient :Get done, total time taken: %v ms", int64(time.Since(ts)/time.Millisecond))
+	log.V(6).Infof("TranslClient : Getting #%v", values)
+	log.V(4).Infof("TranslClient :Get done, total time taken: %v ms", int64(time.Since(ts)/time.Millisecond))
 
 	return values, nil
 }

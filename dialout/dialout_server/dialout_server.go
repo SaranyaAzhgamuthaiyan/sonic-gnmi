@@ -211,7 +211,6 @@ func (c *Client) Run(srv *Server, stream spb.GNMIDialOut_PublishServer) (err err
 			utils.PrintProto(subscribeResponse)
 		}
 
-		// TODO: send back (m *PublishResponse))
 	}
 	return grpc.Errorf(codes.InvalidArgument, "Exiting")
 }

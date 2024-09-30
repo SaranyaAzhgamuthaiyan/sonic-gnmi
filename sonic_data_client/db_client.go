@@ -408,7 +408,7 @@ func ValToResp(val Value) (*gnmipb.SubscribeResponse, error) {
 						},
 					}
 				default:
-					log.Infof("Skipping value for other types: %T", v)
+					log.V(4).Infof("Skipping value for other types: %T", v)
 					continue
 				}
 				// Update the value in the notification
