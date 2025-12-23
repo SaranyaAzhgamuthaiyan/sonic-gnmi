@@ -93,12 +93,14 @@ func (c *TranslClient) Get(w *sync.WaitGroup) ([]*spb.Value, error) {
 		}
 
 		/* Value of each path is added to spb value structure. */
-		values = append(values, &spb.Value{
-			Prefix:    c.prefix,
-			Path:      gnmiPath,
-			Timestamp: ts.UnixNano(),
-			Val:       val,
-		})
+		for _, iter := range val {
+			values = append(values, &spb.Value{
+				Prefix:    c.prefix,
+				Path:      gnmiPath,
+				Timestamp: ts.UnixNano(),
+				Val:       iter,
+			})
+		}
 	}
 
 	/* The values structure at the end is returned and then updates in notitications as

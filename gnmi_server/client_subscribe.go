@@ -297,6 +297,34 @@ func (c *Client) send(stream gnmipb.GNMI_SubscribeServer, dc sdc.Client) error {
 
 		switch v := items[0].(type) {
 		case sdc.Value:
+				if n := v.GetNotification(); n != nil {
+				for _, update := range n.GetUpdate() {
+					val := update.GetVal()
+					var stringVal *gnmipb.TypedValue
+					switch v := val.Value.(type) {
+					case *gnmipb.TypedValue_StringVal:
+						stringVal = &gnmipb.TypedValue{
+							Value: &gnmipb.TypedValue_LeaflistVal{
+								LeaflistVal: &gnmipb.ScalarArray{
+									Element: []*gnmipb.TypedValue{
+										{
+											Value: &gnmipb.TypedValue_StringVal{
+												StringVal: v.StringVal,
+											},
+										},
+									},
+								},
+							},
+						}
+					default:
+						log.V(4).Infof("Skipping value for other types: %T", v)
+						continue
+					}
+					// Update the value in the notification
+					update.Val = stringVal
+				}
+			}
+		
 			if resp, err = sdc.ValToResp(v); err != nil {
 				c.errors++
 				return err

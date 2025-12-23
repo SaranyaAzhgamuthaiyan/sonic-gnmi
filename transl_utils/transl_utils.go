@@ -168,9 +168,9 @@ func ConvertToURI(prefix, path *gnmipb.Path, opts ...pathutil.PathValidatorOpt) 
 }
 
 /* Fill the values from TransLib. */
-func TranslProcessGet(uriPath string, op *string, ctx context.Context) (*gnmipb.TypedValue, error) {
+func TranslProcessGet(uriPath string, op *string, ctx context.Context) ([]*gnmipb.TypedValue, error) {
+	var tv []*gnmipb.TypedValue
 	var jv []byte
-	var data []byte
 	rc, _ := common_utils.GetContext(ctx)
 
 	req := translib.GetRequest{Path: uriPath, User: translib.UserRoles{Name: rc.Auth.User, Roles: rc.Auth.Roles}}
@@ -188,22 +188,25 @@ func TranslProcessGet(uriPath string, op *string, ctx context.Context) (*gnmipb.
 	resp, err1 := translib.Get(req)
 
 	if isTranslibSuccess(err1) {
-		data = resp.Payload
+		for _, iter := range resp {
+			data := iter.Payload
+			dst := new(bytes.Buffer)
+			json.Compact(dst, data)
+			jv = dst.Bytes()
+
+			tmp := &gnmipb.TypedValue{
+				Value: &gnmipb.TypedValue_JsonIetfVal{
+					JsonIetfVal: jv,
+				}}
+
+			tv = append(tv, tmp)
+		}
 	} else {
-		log.V(2).Infof("GET operation failed with error %v", err1.Error())
+		log.V(2).Infof("GET operation failed with error =%v, %v", resp, err1.Error())
 		return nil, err1
 	}
 
-	dst := new(bytes.Buffer)
-	json.Compact(dst, data)
-	jv = dst.Bytes()
-
-	/* Fill the values into GNMI data structures . */
-	return &gnmipb.TypedValue{
-		Value: &gnmipb.TypedValue_JsonIetfVal{
-			JsonIetfVal: jv,
-		}}, nil
-
+	return tv, nil
 }
 
 /* Delete request handling. */
@@ -226,9 +229,9 @@ func TranslProcessDelete(prefix, delPath *gnmipb.Path, ctx context.Context) erro
 	if rc.Auth.AuthEnabled {
 		req.AuthEnabled = true
 	}
-	_, err = translib.Delete(req)
+	resp, err := translib.Delete(req)
 	if err != nil {
-		log.V(2).Infof("DELETE operation failed with error %v", err.Error())
+		log.V(2).Infof("DELETE operation failed with error =%v, %v", resp.ErrSrc, err.Error())
 		return err
 	}
 
@@ -256,10 +259,10 @@ func TranslProcessReplace(prefix *gnmipb.Path, entry *gnmipb.Update, ctx context
 	if rc.Auth.AuthEnabled {
 		req.AuthEnabled = true
 	}
-	_, err1 := translib.Replace(req)
+	resp, err1 := translib.Replace(req)
 
 	if err1 != nil {
-		log.V(2).Infof("REPLACE operation failed with error %v", err1.Error())
+		log.V(2).Infof("REPLACE operation failed with error =%v, %v", resp.ErrSrc, err1.Error())
 		return err1
 	}
 
@@ -287,19 +290,19 @@ func TranslProcessUpdate(prefix *gnmipb.Path, entry *gnmipb.Update, ctx context.
 	if rc.Auth.AuthEnabled {
 		req.AuthEnabled = true
 	}
-	_, err = translib.Update(req)
+	resp, err := translib.Update(req)
 	if err != nil {
 		switch err.(type) {
 		case tlerr.NotFoundError:
 			//If Update fails, it may be due to object not existing in this case use Replace to create and update the object.
-			_, err = translib.Replace(req)
+			resp, err = translib.Replace(req)
 		default:
-			log.V(2).Infof("UPDATE operation failed with error %v", err.Error())
+			log.V(2).Infof("UPDATE operation failed with error =%v, %v", resp.ErrSrc, err.Error())
 			return err
 		}
 	}
 	if err != nil {
-		log.V(2).Infof("UPDATE operation failed with error %v", err.Error())
+		log.V(2).Infof("UPDATE operation failed with error =%v, %v", resp.ErrSrc, err.Error())
 		return err
 	}
 	return nil
@@ -410,6 +413,7 @@ func TranslProcessBulk(delete []*gnmipb.Path, replace []*gnmipb.Update, update [
 
 /* Action/rpc request handling. */
 func TranslProcessAction(uri string, payload []byte, ctx context.Context) ([]byte, error) {
+	var appendResp []byte
 	rc, ctx := common_utils.GetContext(ctx)
 	req := translib.ActionRequest{User: translib.UserRoles{Name: rc.Auth.User, Roles: rc.Auth.Roles}}
 	if rc.BundleVersion != nil {
@@ -428,12 +432,15 @@ func TranslProcessAction(uri string, payload []byte, ctx context.Context) ([]byt
 
 	resp, err := translib.Action(req)
 	__log_audit_msg(ctx, "ACTION", uri, err)
+	for _, iter := range resp {
+		appendResp = append(aresp, iter.Payload...)
+	}
 
 	if err != nil {
-		log.V(2).Infof("Action operation failed with error %v", err.Error())
+		log.V(2).Infof("Action operation failed with error =%v, %v", resp[0].ErrSrc, err.Error())
 		return nil, err
 	}
-	return resp.Payload, nil
+	return appendResp, nil
 }
 
 /* Fetch the supported models. */
