@@ -433,7 +433,7 @@ func TranslProcessAction(uri string, payload []byte, ctx context.Context) ([]byt
 	resp, err := translib.Action(req)
 	__log_audit_msg(ctx, "ACTION", uri, err)
 	for _, iter := range resp {
-		appendResp = append(aresp, iter.Payload...)
+		appendResp = append(appendResp, iter.Payload...)
 	}
 
 	if err != nil {

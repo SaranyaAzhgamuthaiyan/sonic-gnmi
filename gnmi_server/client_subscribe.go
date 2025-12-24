@@ -297,7 +297,7 @@ func (c *Client) send(stream gnmipb.GNMI_SubscribeServer, dc sdc.Client) error {
 
 		switch v := items[0].(type) {
 		case sdc.Value:
-				if n := v.GetNotification(); n != nil {
+			if n := v.GetNotification(); n != nil {
 				for _, update := range n.GetUpdate() {
 					val := update.GetVal()
 					var stringVal *gnmipb.TypedValue
@@ -324,7 +324,7 @@ func (c *Client) send(stream gnmipb.GNMI_SubscribeServer, dc sdc.Client) error {
 					update.Val = stringVal
 				}
 			}
-		
+
 			if resp, err = sdc.ValToResp(v); err != nil {
 				c.errors++
 				return err

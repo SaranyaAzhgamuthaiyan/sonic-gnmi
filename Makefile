@@ -15,13 +15,13 @@ BUILD_GNOI_YANG_PROTO_DIR := $(BUILD_GNOI_YANG_DIR)/proto
 BUILD_GNOI_YANG_SERVER_DIR := $(BUILD_GNOI_YANG_DIR)/server
 BUILD_GNOI_YANG_CLIENT_DIR := $(BUILD_GNOI_YANG_DIR)/client
 GNOI_YANG := $(BUILD_GNOI_YANG_PROTO_DIR)/.gnoi_yang_done
-TOOLS_DIR        := $(TOPDIR)/tools
+TOOLS_DIR := $(TOPDIR)/tools
 PYANG_PLUGIN_DIR := $(TOOLS_DIR)/pyang_plugins
-PYANG  ?= pyang
+PYANG ?= pyang
 GOROOT ?= $(shell $(GO) env GOROOT)
 FORMAT_CHECK = $(BUILD_DIR)/.formatcheck
 FORMAT_LOG = $(BUILD_DIR)/go_format.log
-# Find all .go files excluding vendor, build, and patches files
+
 GO_FILES := $(shell find . -type f -name '*.go' ! -path './vendor/*' ! -path './build/*' ! -path './patches/*' ! -path './proto/*' ! -path './swsscommon/*')
 export CVL_SCHEMA_PATH := $(MGMT_COMMON_DIR)/build/cvl/schema
 
@@ -70,7 +70,6 @@ $(GO_DEPS): go.mod $(PATCHES) swsscommon_wrap $(GNOI_YANG)
 	$(GO) mod download github.com/google/gnxi@v0.0.0-20181220173256-89f51f0ce1e2
 	cp -r $(GOPATH)/pkg/mod/github.com/google/gnxi@v0.0.0-20181220173256-89f51f0ce1e2/* vendor/github.com/google/gnxi/
 
-# Apply patch from sonic-mgmt-common, ignore glog.patch because glog version changed
 	sed -i 's/patch -d $${DEST_DIR}\/github.com\/golang\/glog/\#patch -d $${DEST_DIR}\/github.com\/golang\/glog/g' $(MGMT_COMMON_DIR)/patches/apply.sh
 	$(MGMT_COMMON_DIR)/patches/apply.sh vendor
 	sed -i 's/#patch -d $${DEST_DIR}\/github.com\/golang\/glog/patch -d $${DEST_DIR}\/github.com\/golang\/glog/g' $(MGMT_COMMON_DIR)/patches/apply.sh
@@ -87,18 +86,29 @@ go-deps-clean:
 	$(RM) -r vendor
 
 sonic-gnmi: $(GO_DEPS) $(FORMAT_CHECK)
-# advancetls 1.0.0 release need following patch to build by go-1.19
+	# advancetls 1.0.0 release need following patch to build by go-1.19
 	patch -d vendor -p0 < patches/0002-Fix-advance-tls-build-with-go-119.patch
-# build service first which depends on advancetls
+	make swsscommon_wrap
+
 ifeq ($(CROSS_BUILD_ENVIRON),y)
 	$(GO) build -o ${GOBIN}/telemetry -mod=vendor $(BLD_FLAGS) github.com/sonic-net/sonic-gnmi/telemetry
 ifneq ($(ENABLE_DIALOUT_VALUE),0)
 	$(GO) build -o ${GOBIN}/dialout_client_cli -mod=vendor $(BLD_FLAGS) github.com/sonic-net/sonic-gnmi/dialout/dialout_client_cli
-        $(GO) build -o ${GOBIN}/dialout_server_cli -mod=vendor $(BLD_FLAGS) github.com/sonic-net/sonic-gnmi/dialout/dialout_server_cli
+	$(GO) build -o ${GOBIN}/dialout_server_cli -mod=vendor $(BLD_FLAGS) github.com/sonic-net/sonic-gnmi/dialout/dialout_server_cli
 endif
-	$(GO) build -o ${GOBIN}/gnmi_get -mod=vendor github.com/jipanyang/gnxi/gnmi_get
-	$(GO) build -o ${GOBIN}/gnmi_set -mod=vendor github.com/jipanyang/gnxi/gnmi_set
+	$(GO) build -o ${GOBIN}/gnmi_get -mod=vendor github.com/google/gnxi/gnmi_get
+	$(GO) build -o ${GOBIN}/gnmi_set -mod=vendor github.com/google/gnxi/gnmi_set
+
+	# Backup old crypto for gnmi_cli
+	mkdir -p backup_crypto
+	cp -r vendor/golang.org/x/crypto/* backup_crypto/
+	$(GO) mod download golang.org/x/crypto@v0.0.0-20191206172530-e9b2fee46413
+	cp -r $(GOPATH)/pkg/mod/golang.org/x/crypto@v0.0.0-20191206172530-e9b2fee46413/* vendor/golang.org/x/crypto/
+	chmod -R u+w vendor
 	$(GO) build -o ${GOBIN}/gnmi_cli -mod=vendor github.com/openconfig/gnmi/cmd/gnmi_cli
+	rm -rf vendor/golang.org/x/crypto/
+	mv backup_crypto/ vendor/golang.org/x/crypto/
+
 	$(GO) build -o ${GOBIN}/gnoi_client -mod=vendor github.com/sonic-net/sonic-gnmi/gnoi_client
 	$(GO) build -o ${GOBIN}/gnmi_dump -mod=vendor github.com/sonic-net/sonic-gnmi/gnmi_dump
 else
@@ -107,44 +117,24 @@ ifneq ($(ENABLE_DIALOUT_VALUE),0)
 	$(GO) install -mod=vendor $(BLD_FLAGS) github.com/sonic-net/sonic-gnmi/dialout/dialout_client_cli
 	$(GO) install -mod=vendor $(BLD_FLAGS) github.com/sonic-net/sonic-gnmi/dialout/dialout_server_cli
 endif
-	$(GO) install -mod=vendor github.com/jipanyang/gnxi/gnmi_get
-	$(GO) install -mod=vendor github.com/jipanyang/gnxi/gnmi_set
+	$(GO) install -mod=vendor github.com/google/gnxi/gnmi_get
+	$(GO) install -mod=vendor github.com/google/gnxi/gnmi_set
+
+	# Backup old crypto for gnmi_cli
+	mkdir -p backup_crypto
+	cp -r vendor/golang.org/x/crypto/* backup_crypto/
+	$(GO) mod download golang.org/x/crypto@v0.0.0-20191206172530-e9b2fee46413
+	cp -r $(GOPATH)/pkg/mod/golang.org/x/crypto@v0.0.0-20191206172530-e9b2fee46413/* vendor/golang.org/x/crypto/
+	chmod -R u+w vendor
 	$(GO) install -mod=vendor github.com/openconfig/gnmi/cmd/gnmi_cli
+	rm -rf vendor/golang.org/x/crypto/
+	mv backup_crypto/ vendor/golang.org/x/crypto/
+
 	$(GO) install -mod=vendor github.com/sonic-net/sonic-gnmi/gnoi_client
 	$(GO) install -mod=vendor github.com/sonic-net/sonic-gnmi/gnmi_dump
 	$(GO) install -mod=vendor github.com/sonic-net/sonic-gnmi/build/gnoi_yang/client/gnoi_openconfig_client
 	$(GO) install -mod=vendor github.com/sonic-net/sonic-gnmi/build/gnoi_yang/client/gnoi_sonic_client
-
 endif
-
-# download and apply patch for gnmi client, which will break advancetls
-# backup crypto and gnxi
-	mkdir backup_crypto
-	cp -r vendor/golang.org/x/crypto/* backup_crypto/
-
-# download and patch crypto and gnxi
-	$(GO) mod download golang.org/x/crypto@v0.0.0-20191206172530-e9b2fee46413
-	cp -r $(GOPATH)/pkg/mod/golang.org/x/crypto@v0.0.0-20191206172530-e9b2fee46413/* vendor/golang.org/x/crypto/
-	chmod -R u+w vendor
-	patch -d vendor -p0 < patches/gnmi_cli.all.patch
-	patch -d vendor -p0 < patches/gnmi_set.patch
-	patch -d vendor -p0 < patches/gnmi_get.patch
-	git apply patches/0001-Updated-to-filter-and-write-to-file.patch
-	git apply patches/0003-Fix-client-json-parsing-issue.patch
-
-ifeq ($(CROSS_BUILD_ENVIRON),y)
-	$(GO) build -o ${GOBIN}/gnmi_get -mod=vendor github.com/google/gnxi/gnmi_get
-	$(GO) build -o ${GOBIN}/gnmi_set -mod=vendor github.com/google/gnxi/gnmi_set
-	$(GO) build -o ${GOBIN}/gnmi_cli -mod=vendor github.com/openconfig/gnmi/cmd/gnmi_cli
-else
-	$(GO) install -mod=vendor github.com/google/gnxi/gnmi_get
-	$(GO) install -mod=vendor github.com/google/gnxi/gnmi_set
-	$(GO) install -mod=vendor github.com/openconfig/gnmi/cmd/gnmi_cli
-endif
-
-# restore old version
-	rm -rf vendor/golang.org/x/crypto/
-	mv backup_crypto/ vendor/golang.org/x/crypto/
 
 swsscommon_wrap:
 	make -C swsscommon
@@ -262,7 +252,6 @@ install:
 	$(INSTALL) -D $(BUILD_DIR)/telemetry $(DESTDIR)/usr/sbin/telemetry
 ifneq ($(ENABLE_DIALOUT_VALUE),0)
 	$(INSTALL) -D $(BUILD_DIR)/dialout_client_cli $(DESTDIR)/usr/sbin/dialout_client_cli
-	$(INSTALL) -D $(BUILD_DIR)/dialout_server_cli $(DESTDIR)/usr/sbin/dialout_server_cli
 endif
 	$(INSTALL) -D $(BUILD_DIR)/gnmi_get $(DESTDIR)/usr/sbin/gnmi_get
 	$(INSTALL) -D $(BUILD_DIR)/gnmi_set $(DESTDIR)/usr/sbin/gnmi_set
@@ -277,7 +266,6 @@ deinstall:
 	rm $(DESTDIR)/usr/sbin/telemetry
 ifneq ($(ENABLE_DIALOUT_VALUE),0)
 	rm $(DESTDIR)/usr/sbin/dialout_client_cli
-	rm $(DESTDIR)/usr/sbin/dialout_server_cli
 endif
 	rm $(DESTDIR)/usr/sbin/gnmi_get
 	rm $(DESTDIR)/usr/sbin/gnmi_set

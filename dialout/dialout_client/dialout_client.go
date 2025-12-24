@@ -108,12 +108,12 @@ type ClientConfig struct {
 // it also keeps mapping from destination to running publish Client instance
 type clientSubscription struct {
 	// Config Data
-	name          string
-	destGroupName string
-	prefix        *gpb.Path
-	paths         []*gpb.Path
-	reportType    reportType
-	interval      time.Duration // report interval
+	name              string
+	destGroupName     string
+	prefix            *gpb.Path
+	paths             []*gpb.Path
+	reportType        reportType
+	interval          time.Duration // report interval
 	heartbeatInterval time.Duration // heartbeat interval
 
 	// Running time data
@@ -384,7 +384,7 @@ restart: //Remote server might go down, in that case we restart with next destin
 					time.Sleep(cs.interval)
 				}
 				if cs.reportType == Once {
-                                        //cs.Close()
+					//cs.Close()
 					return
 				}
 			case <-cs.stop:
@@ -688,77 +688,76 @@ func processTelemetryClientConfig(ctx context.Context, redisDb *redis.Client, ke
 }
 
 // read configDB data for telemetry client and start publishing service for client subscription
-func validateFields(redisDb *redis.Client, key string) (error) {
-    ns, err := sdcfg.GetDbDefaultNamespace()
-    if err != nil {
-        return err
-    }
-    separator, err := sdc.GetTableKeySeparator("CONFIG_DB", ns)
-    if err != nil {
-        return err
-    }
-    tableKey := "TELEMETRY_CLIENT" + separator + key
+func validateFields(redisDb *redis.Client, key string) error {
+	ns, err := sdcfg.GetDbDefaultNamespace()
+	if err != nil {
+		return err
+	}
+	separator, err := sdc.GetTableKeySeparator("CONFIG_DB", ns)
+	if err != nil {
+		return err
+	}
+	tableKey := "TELEMETRY_CLIENT" + separator + key
 
-    // Determine configuration type
-    var configType string
-    if strings.HasPrefix(key, "Global") {
-        configType = "Global"
-    } else if strings.HasPrefix(key, "DestinationGroup_") {
-        configType = "Destination"
-    } else if strings.HasPrefix(key, "Subscription_") {
-        configType = "Subscription"
-    } else {
-        return fmt.Errorf("Unknown configuration key %v", key)
-    }
+	// Determine configuration type
+	var configType string
+	if strings.HasPrefix(key, "Global") {
+		configType = "Global"
+	} else if strings.HasPrefix(key, "DestinationGroup_") {
+		configType = "Destination"
+	} else if strings.HasPrefix(key, "Subscription_") {
+		configType = "Subscription"
+	} else {
+		return fmt.Errorf("Unknown configuration key %v", key)
+	}
 
-    // Fetch configuration fields
-    fv, err := redisDb.HGetAll(tableKey).Result()
-    if err != nil {
-        return fmt.Errorf("redis HGetAll failed for %s with error %v", tableKey, err)
-    }
+	// Fetch configuration fields
+	fv, err := redisDb.HGetAll(tableKey).Result()
+	if err != nil {
+		return fmt.Errorf("redis HGetAll failed for %s with error %v", tableKey, err)
+	}
 
-    // Validate configuration fields based on type
-    switch configType {
-    case "Global":
-        requiredFields := []string{"src_ip", "retry_interval", "encoding", "unidirectional"}
-        for _, field := range requiredFields {
-            if _, ok := fv[field]; !ok {
-                return fmt.Errorf("Missing required field %v in global configuration", field)
-            }
-        }
-    case "Destination":
-        requiredFields := []string{"dst_addr"}
-        for _, field := range requiredFields {
-            if _, ok := fv[field]; !ok {
-                return fmt.Errorf("Missing required field %v in destination configuration", field)
-            }
-        }
-    case "Subscription":
-        requiredFields := []string{"dst_group", "report_type", "report_interval", "path_target", "paths", "heartbeat_interval"}
-        for _, field := range requiredFields {
-            if _, ok := fv[field]; !ok {
-                return fmt.Errorf("Missing required field %v in subscription configuration", field)
-            }
-        }
-    }
+	// Validate configuration fields based on type
+	switch configType {
+	case "Global":
+		requiredFields := []string{"src_ip", "retry_interval", "encoding", "unidirectional"}
+		for _, field := range requiredFields {
+			if _, ok := fv[field]; !ok {
+				return fmt.Errorf("Missing required field %v in global configuration", field)
+			}
+		}
+	case "Destination":
+		requiredFields := []string{"dst_addr"}
+		for _, field := range requiredFields {
+			if _, ok := fv[field]; !ok {
+				return fmt.Errorf("Missing required field %v in destination configuration", field)
+			}
+		}
+	case "Subscription":
+		requiredFields := []string{"dst_group", "report_type", "report_interval", "path_target", "paths", "heartbeat_interval"}
+		for _, field := range requiredFields {
+			if _, ok := fv[field]; !ok {
+				return fmt.Errorf("Missing required field %v in subscription configuration", field)
+			}
+		}
+	}
 
-    return nil
+	return nil
 }
 
 // New function to build table key
 func buildTableKey(dbkey string) (string, error) {
-    ns, err := sdcfg.GetDbDefaultNamespace()
-    if err != nil {
-        return "", err
-    }
-    separator, err := sdc.GetTableKeySeparator("CONFIG_DB", ns)
-    if err != nil {
-        return "", err
-    }
-    tableKey := "TELEMETRY_CLIENT" + separator + dbkey
-    return tableKey, nil
+	ns, err := sdcfg.GetDbDefaultNamespace()
+	if err != nil {
+		return "", err
+	}
+	separator, err := sdc.GetTableKeySeparator("CONFIG_DB", ns)
+	if err != nil {
+		return "", err
+	}
+	tableKey := "TELEMETRY_CLIENT" + separator + dbkey
+	return tableKey, nil
 }
-
 
 func DialOutRun(ctx context.Context, ccfg *ClientConfig) error {
 	clientCfg = ccfg
@@ -772,7 +771,7 @@ func DialOutRun(ctx context.Context, ccfg *ClientConfig) error {
 	}
 
 	var redisDb *redis.Client
-	if sdc.UseRedisLocalTcpPort == false {
+	if !sdc.UseRedisLocalTcpPort {
 		addr, err := sdcfg.GetDbSock("CONFIG_DB", ns)
 		if err != nil {
 			return err
@@ -822,13 +821,15 @@ func DialOutRun(ctx context.Context, ccfg *ClientConfig) error {
 	log.V(2).Infof("Psubscribe succeeded: %v", subscr)
 
 	var dbkeys []string
-	dbkey_prefix := "TELEMETRY_CLIENT" + separator
-	dbkeys, err = redisDb.Keys(dbkey_prefix + "*").Result()
+	dbkeyPrefix := "TELEMETRY_CLIENT" + separator
+	dbkeys, err = redisDb.Keys(dbkeyPrefix + "*").Result()
 	if err != nil {
 		log.V(2).Infof("redis Keys failed for %v with err %v", pattern, err)
 		return err
 	}
-	processedKeys := make(map[string]string) // Key -> Last Operation State
+
+	// Map to track the state of keys
+	processedKeys := make(map[string]string)                 // Key -> Last Operation State
 	lastConfigurations := make(map[string]map[string]string) // Key -> Last Configuration
 
 	for _, dbkey := range dbkeys {
@@ -918,7 +919,7 @@ func DialOutRun(ctx context.Context, ccfg *ClientConfig) error {
 					log.Errorf("Error processing hset for key %v: %v", dbkey, err)
 				}
 				lastConfigurations[dbkey] = newConfig // Update last known configuration
-				processedKeys[dbkey] = "hset" // Update operation state
+				processedKeys[dbkey] = "hset"         // Update operation state
 			} else {
 				log.Infof("Skipping redundant hset for key %v", dbkey)
 			}
@@ -937,14 +938,13 @@ func DialOutRun(ctx context.Context, ccfg *ClientConfig) error {
 }
 
 func isEqual(cfg1, cfg2 map[string]string) bool {
-    if len(cfg1) != len(cfg2) {
-        return false
-    }
-    for key, val1 := range cfg1 {
-        if val2, ok := cfg2[key]; !ok || val1 != val2 {
-            return false
-        }
-    }
-    return true
+	if len(cfg1) != len(cfg2) {
+		return false
+	}
+	for key, val1 := range cfg1 {
+		if val2, ok := cfg2[key]; !ok || val1 != val2 {
+			return false
+		}
+	}
+	return true
 }
-
