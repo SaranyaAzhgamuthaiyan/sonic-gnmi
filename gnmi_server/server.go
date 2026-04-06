@@ -21,7 +21,10 @@ import (
 	gnmipb "github.com/openconfig/gnmi/proto/gnmi"
 	gnmi_extpb "github.com/openconfig/gnmi/proto/gnmi_ext"
 	gnoi_system_pb "github.com/openconfig/gnoi/system"
+
+	//gnoi_yang "github.com/sonic-net/sonic-gnmi/build/gnoi_yang/server"
 	gnoi_file_pb "github.com/openconfig/gnoi/file"
+	gnoi_os_pb "github.com/openconfig/gnoi/os"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -51,8 +54,8 @@ type Server struct {
 	// comes from a master controller.
 	ReqFromMaster func(req *gnmipb.SetRequest, masterEID *uint128) error
 	masterEID     uint128
+	gnoi_system_pb.UnimplementedSystemServer
 }
-
 
 // FileServer is the server API for File service.
 // All implementations must embed UnimplementedFileServer
@@ -62,12 +65,12 @@ type FileServer struct {
 	gnoi_file_pb.UnimplementedFileServer
 }
 
-// SystemServer is the server API for System service.
+// OSServer is the server API for System service.
 // All implementations must embed UnimplementedSystemServer
 // for forward compatibility
-type SystemServer struct {
+type OSServer struct {
 	*Server
-	gnoi_system_pb.UnimplementedSystemServer
+	gnoi_os_pb.UnimplementedOSServer
 }
 
 type AuthTypes map[string]bool
@@ -91,6 +94,8 @@ type Config struct {
 
 var AuthLock sync.Mutex
 var maMu sync.Mutex
+
+const WriteAccessMode = "readwrite"
 
 func (i AuthTypes) String() string {
 	if i["none"] {
@@ -178,7 +183,7 @@ func NewServer(config *Config, opts []grpc.ServerOption) (*Server, error) {
 	}
 
 	fileSrv := &FileServer{Server: srv}
-	systemSrv := &SystemServer{Server: srv}
+	osSrv := &OSServer{Server: srv}
 
 	var err error
 	if srv.config.Port < 0 {
@@ -191,11 +196,13 @@ func NewServer(config *Config, opts []grpc.ServerOption) (*Server, error) {
 	gnmipb.RegisterGNMIServer(srv.s, srv)
 	spb_jwt_gnoi.RegisterSonicJwtServiceServer(srv.s, srv)
 	if srv.config.EnableTranslibWrite || srv.config.EnableNativeWrite {
-		gnoi_system_pb.RegisterSystemServer(srv.s, systemSrv)
+		gnoi_system_pb.RegisterSystemServer(srv.s, srv)
 		gnoi_file_pb.RegisterFileServer(srv.s, fileSrv)
+		gnoi_os_pb.RegisterOSServer(srv.s, osSrv)
 	}
 	if srv.config.EnableTranslibWrite {
 		spb_gnoi.RegisterSonicServiceServer(srv.s, srv)
+
 	}
 	spb_gnoi.RegisterDebugServer(srv.s, srv)
 	log.V(1).Infof("Created Server on %s, read-only: %t", srv.Address(), !srv.config.EnableTranslibWrite)
@@ -240,7 +247,12 @@ func (srv *Server) Port() int64 {
 	return srv.config.Port
 }
 
-func authenticate(config *Config, ctx context.Context) (context.Context, error) {
+// Auth - Authenticate
+func (srv *Server) Auth(ctx context.Context) (context.Context, error) {
+	return authenticate(srv.config, ctx, true)
+}
+
+func authenticate(config *Config, ctx context.Context, writeAccess bool) (context.Context, error) {
 	var err error
 	success := false
 	rc, ctx := common_utils.GetContext(ctx)
@@ -268,6 +280,13 @@ func authenticate(config *Config, ctx context.Context) (context.Context, error) 
 		if err == nil {
 			success = true
 		}
+		// role must be readwrite to support write access
+		if success && writeAccess && config.ConfigTableName != "" {
+			role := rc.Auth.Roles[0]
+			if role != WriteAccessMode {
+				return ctx, fmt.Errorf("%s does not have write access, %s", rc.Auth.User, role)
+			}
+		}
 	}
 
 	//Allow for future authentication mechanisms here...
@@ -283,7 +302,7 @@ func authenticate(config *Config, ctx context.Context) (context.Context, error) 
 // Subscribe implements the gNMI Subscribe RPC.
 func (s *Server) Subscribe(stream gnmipb.GNMI_SubscribeServer) error {
 	ctx := stream.Context()
-	ctx, err := authenticate(s.config, ctx)
+	ctx, err := authenticate(s.config, ctx, false)
 	if err != nil {
 		return err
 	}
@@ -368,7 +387,7 @@ func IsNativeOrigin(origin string) bool {
 // Get implements the Get RPC in gNMI spec.
 func (s *Server) Get(ctx context.Context, req *gnmipb.GetRequest) (*gnmipb.GetResponse, error) {
 	common_utils.IncCounter(common_utils.GNMI_GET)
-	ctx, err := authenticate(s.config, ctx)
+	ctx, err := authenticate(s.config, ctx, false)
 	if err != nil {
 		common_utils.IncCounter(common_utils.GNMI_GET_FAIL)
 		return nil, err
@@ -429,17 +448,18 @@ func (s *Server) Get(ctx context.Context, req *gnmipb.GetRequest) (*gnmipb.GetRe
 		return nil, status.Error(codes.NotFound, err.Error())
 	}
 
-	for index, spbValue := range spbValues {
+	for _, spbValue := range spbValues {
 		update := &gnmipb.Update{
 			Path: spbValue.GetPath(),
 			Val:  spbValue.GetVal(),
 		}
 
-		notifications[index] = &gnmipb.Notification{
+		notification := &gnmipb.Notification{
 			Timestamp: spbValue.GetTimestamp(),
 			Prefix:    prefix,
 			Update:    []*gnmipb.Update{update},
 		}
+		notifications = append(notifications, notification)
 	}
 	return &gnmipb.GetResponse{Notification: notifications}, nil
 }
@@ -474,7 +494,7 @@ func (s *Server) Set(ctx context.Context, req *gnmipb.SetRequest) (*gnmipb.SetRe
 		common_utils.IncCounter(common_utils.GNMI_SET_FAIL)
 		return nil, grpc.Errorf(codes.Unimplemented, "GNMI is in read-only mode")
 	}
-	ctx, err := authenticate(s.config, ctx)
+	ctx, err := authenticate(s.config, ctx, true)
 	if err != nil {
 		common_utils.IncCounter(common_utils.GNMI_SET_FAIL)
 		return nil, err
@@ -576,7 +596,7 @@ func (s *Server) Set(ctx context.Context, req *gnmipb.SetRequest) (*gnmipb.SetRe
 }
 
 func (s *Server) Capabilities(ctx context.Context, req *gnmipb.CapabilityRequest) (*gnmipb.CapabilityResponse, error) {
-	ctx, err := authenticate(s.config, ctx)
+	ctx, err := authenticate(s.config, ctx, false)
 	if err != nil {
 		return nil, err
 	}

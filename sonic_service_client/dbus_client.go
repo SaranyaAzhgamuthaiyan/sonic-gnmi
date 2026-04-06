@@ -1,44 +1,62 @@
 package host_service
 
 import (
-	"time"
 	"fmt"
 	"reflect"
-	log "github.com/golang/glog"
+	"time"
+
 	"github.com/godbus/dbus/v5"
+	log "github.com/golang/glog"
 	"github.com/sonic-net/sonic-gnmi/common_utils"
 )
 
 type Service interface {
+	// Close the connection to the D-Bus
+	Close() error
+
+	// SONiC Host Service D-Bus API
 	ConfigReload(fileName string) error
 	ConfigSave(fileName string) error
 	ApplyPatchYang(fileName string) error
 	ApplyPatchDb(fileName string) error
-	CreateCheckPoint(cpName string)  error
+	CreateCheckPoint(cpName string) error
 	DeleteCheckPoint(cpName string) error
 	StopService(service string) error
 	RestartService(service string) error
 	GetFileStat(path string) (map[string]string, error)
-	HaltSystem() error
+	DownloadImage(url string, save_as string) error
+	InstallImage(where string) error
+	ListImages() (string, error)
+	ActivateImage(image string) error
 }
 
 type DbusClient struct {
 	busNamePrefix string
 	busPathPrefix string
 	intNamePrefix string
-	channel chan struct{}
+	channel       chan struct{}
 }
 
 func NewDbusClient() (Service, error) {
+	log.Infof("DbusClient: NewDbusClient")
+
 	var client DbusClient
 	var err error
-
 	client.busNamePrefix = "org.SONiC.HostService."
 	client.busPathPrefix = "/org/SONiC/HostService/"
 	client.intNamePrefix = "org.SONiC.HostService."
 	err = nil
 
 	return &client, err
+}
+
+// Close the connection to the D-Bus.
+func (c *DbusClient) Close() error {
+	log.Infof("DbusClient: Close")
+	if c.channel != nil {
+		close(c.channel)
+	}
+	return nil
 }
 
 func DbusApi(busName string, busPath string, intName string, timeout int, args ...interface{}) (interface{}, error) {
@@ -193,20 +211,50 @@ func (c *DbusClient) GetFileStat(path string) (map[string]string, error) {
 	return data, nil
 }
 
-func (c *DbusClient) HaltSystem() error {
-    // Increment the counter for the DBUS_HALT_SYSTEM event
-    common_utils.IncCounter(common_utils.DBUS_HALT_SYSTEM)
+func (c *DbusClient) DownloadImage(url string, save_as string) error {
+	common_utils.IncCounter(common_utils.DBUS_IMAGE_DOWNLOAD)
+	modName := "image_service"
+	busName := c.busNamePrefix + modName
+	busPath := c.busPathPrefix + modName
+	intName := c.intNamePrefix + modName + ".download"
+	_, err := DbusApi(busName, busPath, intName /*timeout=*/, 900, url, save_as)
+	return err
+}
 
-    // Set the module name and update the D-Bus properties
-    modName := "systemd"
-    busName := c.busNamePrefix + modName
-    busPath := c.busPathPrefix + modName
-    intName := c.intNamePrefix + modName + ".execute_reboot"
+func (c *DbusClient) InstallImage(where string) error {
+	common_utils.IncCounter(common_utils.DBUS_IMAGE_INSTALL)
+	modName := "image_service"
+	busName := c.busNamePrefix + modName
+	busPath := c.busPathPrefix + modName
+	intName := c.intNamePrefix + modName + ".install"
+	_, err := DbusApi(busName, busPath, intName /*timeout=*/, 900, where)
+	return err
+}
 
-    //Set the method to HALT(3) the system
-    const RebootMethod_HALT = 3
+func (c *DbusClient) ListImages() (string, error) {
+	common_utils.IncCounter(common_utils.DBUS_IMAGE_LIST)
+	modName := "image_service"
+	busName := c.busNamePrefix + modName
+	busPath := c.busPathPrefix + modName
+	intName := c.intNamePrefix + modName + ".list_images"
+	result, err := DbusApi(busName, busPath, intName /*timeout=*/, 60)
+	if err != nil {
+		return "", err
+	}
+	strResult, ok := result.(string)
+	if !ok {
+		return "", fmt.Errorf("Invalid result type %v %v", result, reflect.TypeOf(result))
+	}
+	log.V(2).Infof("ListImages: %v", result)
+	return strResult, nil
+}
 
-    // Invoke the D-Bus API to execute the halt command
-    _, err := DbusApi(busName, busPath, intName, 10, RebootMethod_HALT)
-    return err
+func (c *DbusClient) ActivateImage(image string) error {
+	common_utils.IncCounter(common_utils.DBUS_IMAGE_ACTIVATE)
+	modName := "image_service"
+	busName := c.busNamePrefix + modName
+	busPath := c.busPathPrefix + modName
+	intName := c.intNamePrefix + modName + ".set_next_boot"
+	_, err := DbusApi(busName, busPath, intName, 60, image)
+	return err
 }

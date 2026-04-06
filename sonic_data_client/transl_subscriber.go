@@ -127,6 +127,7 @@ func (ts *translSubscriber) processResponses(q *queue.PriorityQueue) {
 		}
 	}()
 	defer recoverSubscribe(c)
+	ts.synced.Add(1) // Increment the WaitGroup counter at the start
 
 	for {
 		items, err := q.Get(1)
@@ -145,6 +146,7 @@ func (ts *translSubscriber) processResponses(q *queue.PriorityQueue) {
 				//DB Connection or other backend error
 				enqueFatalMsgTranslib(c, "DB Connection Error")
 				close(c.channel)
+				ts.synced.Done() // Balance ts.synced.Add() calls
 				return
 			}
 
@@ -152,22 +154,20 @@ func (ts *translSubscriber) processResponses(q *queue.PriorityQueue) {
 				if ts.stopOnSync {
 					ts.notify(nil)
 					log.V(6).Infof("Stopping on sync signal from translib")
+					ts.synced.Done() // Balance ts.synced.Add() calls
 					return
 				}
-
-				log.V(6).Infof("SENDING SYNC")
-				enqueueSyncMessage(c)
-				syncDone = true
-				ts.synced.Done()
-				ts.filterMsgs = false
-				break
+				log.V(6).Info("SENDING SYNC")
+				enqueueSyncMessage(ts.client)
+			} else {
+				if err := ts.notify(v); err != nil {
+					log.Warning(err)
+					enqueFatalMsgTranslib(ts.client, "Internal error")
+					ts.synced.Done() // Balance ts.synced.Add() calls
+					return
+				}
 			}
 
-			if err := ts.notify(v); err != nil {
-				log.Warning(err)
-				enqueFatalMsgTranslib(c, "Internal error")
-				return
-			}
 		default:
 			log.V(1).Infof("Unknown data type %T in queue", v)
 		}

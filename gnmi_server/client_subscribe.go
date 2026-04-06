@@ -9,11 +9,11 @@ import (
 
 	"github.com/Workiva/go-datastructures/queue"
 	log "github.com/golang/glog"
+	gnmipb "github.com/openconfig/gnmi/proto/gnmi"
+	sdc "github.com/sonic-net/sonic-gnmi/sonic_data_client"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	sdc "github.com/sonic-net/sonic-gnmi/sonic_data_client"
-	gnmipb "github.com/openconfig/gnmi/proto/gnmi"
 )
 
 // Client contains information about a subscribe client that has connected to the server.
@@ -29,9 +29,9 @@ type Client struct {
 	q         *queue.PriorityQueue
 	subscribe *gnmipb.SubscriptionList
 	// Wait for all sub go routine to finish
-	w     sync.WaitGroup
-	fatal bool
-	logLevel   int
+	w        sync.WaitGroup
+	fatal    bool
+	logLevel int
 }
 
 // Syslog level for error
@@ -45,8 +45,8 @@ var connectionManager *ConnectionManager
 func NewClient(addr net.Addr) *Client {
 	pq := queue.NewPriorityQueue(1, false)
 	return &Client{
-		addr: addr,
-		q:    pq,
+		addr:     addr,
+		q:        pq,
 		logLevel: logLevelError,
 	}
 }
@@ -172,7 +172,7 @@ func (c *Client) Run(stream gnmipb.GNMI_SubscribeServer) (err error) {
 		return grpc.Errorf(codes.Unimplemented, "Empty target data not supported")
 	} else if target == "OTHERS" {
 		dc, err = sdc.NewNonDbClient(paths, prefix)
-	} else if ((target == "EVENTS") && (mode == gnmipb.SubscriptionList_STREAM)) {
+	} else if (target == "EVENTS") && (mode == gnmipb.SubscriptionList_STREAM) {
 		dc, err = sdc.NewEventClient(paths, prefix, c.logLevel)
 	} else if _, ok, _, _ := sdc.IsTargetDb(target); ok {
 		dc, err = sdc.NewDbClient(paths, prefix)
@@ -302,11 +302,39 @@ func (c *Client) send(stream gnmipb.GNMI_SubscribeServer, dc sdc.Client) error {
 
 		switch v := items[0].(type) {
 		case sdc.Value:
+			if n := v.GetNotification(); n != nil {
+				for _, update := range n.GetUpdate() {
+					val := update.GetVal()
+					var stringVal *gnmipb.TypedValue
+					switch v := val.Value.(type) {
+					case *gnmipb.TypedValue_StringVal:
+						stringVal = &gnmipb.TypedValue{
+							Value: &gnmipb.TypedValue_LeaflistVal{
+								LeaflistVal: &gnmipb.ScalarArray{
+									Element: []*gnmipb.TypedValue{
+										{
+											Value: &gnmipb.TypedValue_StringVal{
+												StringVal: v.StringVal,
+											},
+										},
+									},
+								},
+							},
+						}
+					default:
+						log.V(4).Infof("Skipping value for other types: %T", v)
+						continue
+					}
+					// Update the value in the notification
+					update.Val = stringVal
+				}
+			}
+
 			if resp, err = sdc.ValToResp(v); err != nil {
 				c.errors++
 				return err
 			}
-			val = &v;
+			val = &v
 		default:
 			log.V(1).Infof("Unknown data type %v for %s in queue", items[0], c)
 			c.errors++
